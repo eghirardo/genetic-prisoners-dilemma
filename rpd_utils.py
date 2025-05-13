@@ -2,6 +2,9 @@ import random
 import math
 import numpy as np
 from copy import deepcopy
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import pandas as pd
 
 # --- Game Constants ---
 COOPERATE = 0
@@ -324,6 +327,8 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
             mutation_strength, next_ind_id_start, crossover_alpha
         )
 
+        population.sort(key=lambda ind: ind.avg_score_per_round, reverse=True)
+
         avg_raw_score = np.mean([ind.avg_score_per_round for ind in population])
         best_raw_score = max(ind.avg_score_per_round for ind in population)
         num_species = len(species_representatives)
@@ -337,9 +342,85 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
         population_diversity_history.append(diversity)
         avg_fitness_history.append(avg_fitness)
 
+            
         if verbose and (generation % verbose == 0 or generation == num_generations - 1):
             print(f"Generation {generation + 1}/{num_generations}")
             print(f"Avg Raw Score: {avg_raw_score:.2f}, Best Raw Score: {best_raw_score:.2f}")
             print(f"Avg Fitness: {avg_fitness:.2f}, Num Species: {num_species}")
             print(f"Population Diversity: {diversity:.2f}")
-    return population, avg_raw_score_history, best_raw_score_history, avg_fitness_history, num_species_history, population_diversity_history
+    return population_history, avg_raw_score_history, best_raw_score_history, avg_fitness_history, num_species_history, population_diversity_history
+
+def _run_evolution_island(population, population_size, num_generations, num_opponents_to_play,
+                   num_rounds_per_game, elite_size, tournament_k,
+                   mutation_rate, mutation_strength,crossover_alpha,
+                   compatibility_threshold,
+                   verbose=False):
+    return run_evolution(population_size, num_generations, num_opponents_to_play,
+                   num_rounds_per_game, elite_size, tournament_k,
+                   mutation_rate, mutation_strength,crossover_alpha,
+                   compatibility_threshold, verbose=verbose, population=population)
+
+def run_island_model(population_size, num_generations, num_opponents_to_play,
+                   num_rounds_per_game, elite_size, tournament_k,
+                   mutation_rate, mutation_strength,crossover_alpha,
+                   compatibility_threshold, migration_frequency, island_count, num_migrants,
+                   verbose=False, processes=-1):
+    
+
+    
+    partial_run_evolution = partial(_run_evolution_island, population_size=population_size,
+                                    num_generations=migration_frequency,
+                                    num_opponents_to_play=num_opponents_to_play,
+                                    num_rounds_per_game=num_rounds_per_game,
+                                    elite_size=elite_size,
+                                    tournament_k=tournament_k,
+                                    mutation_rate=mutation_rate,
+                                    mutation_strength=mutation_strength,
+                                    crossover_alpha=crossover_alpha,
+                                    compatibility_threshold=compatibility_threshold,
+                                    verbose=False)
+    
+    global_population_list = [[]] * island_count
+
+    if processes == -1:
+        processes = cpu_count()
+    
+    max_processes = min(processes, population_size)
+
+    with Pool(processes=max_processes) as pool:
+        population_list = [None] * island_count
+        island_results = pool.map(partial_run_evolution, population_list)
+        populations, _, _, _, _, _ = zip(*island_results)
+        populations = list(populations)
+        last_populations = [pop[-1] for pop in populations]
+        for i in range(island_count):
+            global_population_list[i].append(populations[i])
+    
+    if verbose:
+        print("Migration 1...")
+
+    for i in range(island_count):
+        best_agents = populations[i][:num_migrants]
+        populations[(i + 1) % island_count] += best_agents
+        populations[i] = populations[i][num_migrants:]
+
+    for i in range(migration_frequency, num_generations, migration_frequency):
+        with Pool(max_processes) as pool:
+            island_results = pool.map(partial_run_evolution, last_populations)
+            populations, _, _, _, _, _ = zip(*island_results)
+            populations = list(populations)
+            last_populations = [pop[-1] for pop in populations]
+            for j in range(island_count):
+                global_population_list[j].append(populations[j])
+        
+        if verbose:
+            migration_number = i // migration_frequency + 1
+            print(f'Migration {migration_number}...')
+        
+        # Migrate the best genome from each island to the next
+        for j in range(island_count):
+            best_agents = last_populations[j][:num_migrants]
+            last_populations[(j + 1) % island_count] += best_agents
+            last_populations[j] = last_populations[j][num_migrants:]
+    
+    return global_population_list
