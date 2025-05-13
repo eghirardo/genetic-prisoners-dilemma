@@ -5,6 +5,7 @@ from copy import deepcopy
 from multiprocessing import Pool, cpu_count
 from functools import partial
 import pandas as pd
+from copy import deepcopy
 
 # --- Game Constants ---
 COOPERATE = 0
@@ -33,11 +34,10 @@ class Individual:
         self.avg_score_per_round = 0.0
         self.total_score = 0.0
         self.games_played = 0
-        self.species_id = None
         self.id = id_num
 
     def __repr__(self):
-        return f"Ind(ID:{self.id}, Fit:{self.fitness:.2f}, Spc:{self.species_id}, Genome_snippet:{self.genome[:3]}...)"
+        return f"Ind(ID:{self.id}, Fit:{self.fitness:.2f}, Genome:{self.genome}...)"
 
 # --- Game Mechanics ---
 def get_history_index(my_moves, opp_moves):
@@ -52,7 +52,7 @@ def get_history_index(my_moves, opp_moves):
     o1, o2 = opp_moves[-1], opp_moves[-2]
     # Binary to integer: (m2)(m1)(o2)(o1)
     binary_str = f"{m2}{m1}{o2}{o1}"
-    index = int(binary_str, 2)
+    index = int(binary_str, 2) 
     return index
 
 def get_move(individual: Individual, my_moves, opp_moves):
@@ -116,7 +116,7 @@ def calculate_fitnesses(population, num_opponents_to_play: int, num_rounds_per_g
     pop_size = len(population)
 
     for i, ind in enumerate(population):
-        ind.fitness = 0  # Reset fitness (will be adjusted by speciation later)
+        ind.fitness = 0  # Reset fitness 
         ind.avg_score_per_round = 0
         ind.total_score = 0
         ind.games_played = 0
@@ -149,15 +149,20 @@ def calculate_fitnesses(population, num_opponents_to_play: int, num_rounds_per_g
         else: # Only one individual in population or no opponents selected
             ind.avg_score_per_round = 0.0
             
-        ind.fitness = ind.avg_score_per_round # Raw fitness before speciation adjustment
+        ind.fitness = ind.avg_score_per_round # Raw fitness
 
 
 # --- Genetic Operators ---
-def tournament_selection(population, k=3):
-    """Selects an individual using tournament selection."""
-    if not population: return None # Handle empty population case
-    tournament = random.sample(population, k)
-    return max(tournament, key=lambda ind: ind.fitness) # Fitness used here is adjusted fitness
+def rank_selection(population):
+    """Selects an individual using rank selection."""
+    sorted_population = sorted(population, key=lambda ind: ind.fitness, reverse=True)
+    population_size = len(sorted_population)
+    s = 2
+    weights = [(2-s) / population_size + (2*rank*s-1) / (population_size*(population_size-1)) for rank in range(population_size, 0, -1)]
+    weights = np.array(weights)
+    weights /= np.sum(weights)  # Normalize weights to sum to 1
+    selected_index = np.random.choice(len(sorted_population), p=weights)
+    return sorted_population[selected_index]
 
 
 def blend_crossover(parent1: Individual, parent2: Individual, alpha: float):
@@ -184,7 +189,6 @@ def gaussian_mutation(genome, mutation_rate: float, mutation_strength=0.1):
             mutated_genome[i] = np.clip(mutated_genome[i], 0.0, 1.0) # Keep within [0,1]
     return mutated_genome
 
-# --- Speciation ---
 def genomic_distance(ind1: Individual, ind2: Individual, c1=1.0, c2=1.0, c3=0.4):
     """
     Calculates the genomic distance between two individuals.
@@ -193,58 +197,9 @@ def genomic_distance(ind1: Individual, ind2: Individual, c1=1.0, c2=1.0, c3=0.4)
     # Simple Euclidean distance
     return np.linalg.norm(ind1.genome - ind2.genome)
 
-def speciate_population(population, compatibility_threshold: float):
-    """
-    Assigns individuals to species based on genomic distance.
-    Fitness is then shared among members of the same species.
-    Returns species representatives and updates individual species_id and fitness.
-    """
-    if not population:
-        return [], {}
-
-    species_representatives = []
-    species_members = {} # key: species_id (rep_id), value: list of members
-
-    for ind in population:
-        ind.species_id = None
-        found_species = False
-        # Try to assign to an existing species
-        for rep_idx, rep in enumerate(species_representatives):
-            if genomic_distance(ind, rep) < compatibility_threshold:
-                ind.species_id = rep.id # Use rep's unique ID as species ID
-                if rep.id not in species_members:
-                    species_members[rep.id] = []
-                species_members[rep.id].append(ind)
-                found_species = True
-                break
-        
-        # If not assigned, this individual becomes a new representative
-        if not found_species:
-            # Use the individual's own ID as its new species ID
-            # (Need to ensure individual IDs are unique across generations or use a species counter)
-            # For simplicity, let's make species_id based on the representative's id.
-            ind.species_id = ind.id 
-            species_representatives.append(deepcopy(ind)) # Store a copy as representative
-            species_members[ind.id] = [ind]
-
-    # Adjust fitness using sharing (Sharing an individual's raw fitness among its species members)
-    # ind.fitness will store the adjusted fitness
-    for spec_id, members in species_members.items():
-        if not members: continue
-        species_size = len(members)
-        for member in members:
-            # Fitness was already set to avg_score_per_round
-            # Now adjust it by species size
-            if species_size > 0:
-                member.fitness = member.avg_score_per_round / species_size
-            else: # Should not happen if members is not empty
-                member.fitness = 0 
-                
-    return species_representatives, species_members
-
 
 # --- Population Management ---
-def create_next_generation(population, elite_size: int, tournament_k: int,
+def create_next_generation(population, elite_size: int,
                            mutation_rate: float, mutation_strength: float,
                            next_ind_id_start: int, crossover_alpha=None):
     """
@@ -268,8 +223,8 @@ def create_next_generation(population, elite_size: int, tournament_k: int,
 
     # Fill the rest of the population using selection, crossover, and mutation
     while len(new_population) < pop_size:
-        parent1 = tournament_selection(population, k=tournament_k)
-        parent2 = tournament_selection(population, k=tournament_k)
+        parent1 = rank_selection(population)
+        parent2 = rank_selection(population)
 
         child_genome = blend_crossover(parent1, parent2, crossover_alpha)
 
@@ -295,9 +250,8 @@ def calculate_population_diversity(population):
     return np.mean(distances) if distances else 0.0
 
 def run_evolution(population_size, num_generations, num_opponents_to_play,
-                   num_rounds_per_game, elite_size, tournament_k,
+                   num_rounds_per_game, elite_size, 
                    mutation_rate, mutation_strength,crossover_alpha,
-                   compatibility_threshold,
                    verbose=False, population=None):
     """
     Main loop for running the evolutionary algorithm.
@@ -305,7 +259,6 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
     population_history = []
     avg_raw_score_history = []
     best_raw_score_history = []
-    num_species_history = []
     population_diversity_history = []
     avg_fitness_history = []
 
@@ -316,71 +269,64 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
 
         # Calculate fitnesses
         calculate_fitnesses(population, num_opponents_to_play, num_rounds_per_game)
-        
-        # Speciate population
-        species_representatives, species_members = speciate_population(population, compatibility_threshold)
-        
-        # Create next generation
-        next_ind_id_start = max(ind.id for ind in population) + 1
-        population, next_ind_id_start = create_next_generation(
-            population, elite_size, tournament_k, mutation_rate,
-            mutation_strength, next_ind_id_start, crossover_alpha
-        )
-
         population.sort(key=lambda ind: ind.avg_score_per_round, reverse=True)
+
 
         avg_raw_score = np.mean([ind.avg_score_per_round for ind in population])
         best_raw_score = max(ind.avg_score_per_round for ind in population)
-        num_species = len(species_representatives)
         diversity = calculate_population_diversity(population)
         avg_fitness = np.mean([ind.fitness for ind in population])
 
         population_history.append(population)
         avg_raw_score_history.append(avg_raw_score)
         best_raw_score_history.append(best_raw_score)
-        num_species_history.append(num_species)
         population_diversity_history.append(diversity)
         avg_fitness_history.append(avg_fitness)
-
             
         if verbose and (generation % verbose == 0 or generation == num_generations - 1):
             print(f"Generation {generation + 1}/{num_generations}")
             print(f"Avg Raw Score: {avg_raw_score:.2f}, Best Raw Score: {best_raw_score:.2f}")
-            print(f"Avg Fitness: {avg_fitness:.2f}, Num Species: {num_species}")
+            print(f"Avg Fitness: {avg_fitness:.2f}")
             print(f"Population Diversity: {diversity:.2f}")
-    return population_history, avg_raw_score_history, best_raw_score_history, avg_fitness_history, num_species_history, population_diversity_history
+        
+        # Create next generation
+        next_ind_id_start = max(ind.id for ind in population) + 1
+        population, next_ind_id_start = create_next_generation(
+            population, elite_size, mutation_rate,
+            mutation_strength, next_ind_id_start, crossover_alpha
+        )
+
+        
+
+    
+    return population_history, avg_raw_score_history, best_raw_score_history, avg_fitness_history, population_diversity_history
 
 def _run_evolution_island(population, population_size, num_generations, num_opponents_to_play,
-                   num_rounds_per_game, elite_size, tournament_k,
+                   num_rounds_per_game, elite_size, 
                    mutation_rate, mutation_strength,crossover_alpha,
-                   compatibility_threshold,
                    verbose=False):
     return run_evolution(population_size, num_generations, num_opponents_to_play,
-                   num_rounds_per_game, elite_size, tournament_k,
+                   num_rounds_per_game, elite_size, 
                    mutation_rate, mutation_strength,crossover_alpha,
-                   compatibility_threshold, verbose=verbose, population=population)
+                   verbose=verbose, population=population)
 
 def run_island_model(population_size, num_generations, num_opponents_to_play,
-                   num_rounds_per_game, elite_size, tournament_k,
+                   num_rounds_per_game, elite_size, 
                    mutation_rate, mutation_strength,crossover_alpha,
-                   compatibility_threshold, migration_frequency, island_count, num_migrants,
+                   migration_frequency, island_count, num_migrants,
                    verbose=False, processes=-1):
-    
-
     
     partial_run_evolution = partial(_run_evolution_island, population_size=population_size,
                                     num_generations=migration_frequency,
                                     num_opponents_to_play=num_opponents_to_play,
                                     num_rounds_per_game=num_rounds_per_game,
                                     elite_size=elite_size,
-                                    tournament_k=tournament_k,
                                     mutation_rate=mutation_rate,
                                     mutation_strength=mutation_strength,
                                     crossover_alpha=crossover_alpha,
-                                    compatibility_threshold=compatibility_threshold,
                                     verbose=False)
     
-    global_population_list = [[]] * island_count
+    global_population_list = [[] for _ in range(island_count)]
 
     if processes == -1:
         processes = cpu_count()
@@ -390,28 +336,29 @@ def run_island_model(population_size, num_generations, num_opponents_to_play,
     with Pool(processes=max_processes) as pool:
         population_list = [None] * island_count
         island_results = pool.map(partial_run_evolution, population_list)
-        populations, _, _, _, _, _ = zip(*island_results)
+        populations, _, _, _, _ = zip(*island_results)
         populations = list(populations)
-        last_populations = [pop[-1] for pop in populations]
+        last_populations = [pop[-1][:] for pop in populations]
         for i in range(island_count):
-            global_population_list[i].append(populations[i])
+            global_population_list[i] = populations[i]
     
     if verbose:
         print("Migration 1...")
 
     for i in range(island_count):
-        best_agents = populations[i][:num_migrants]
-        populations[(i + 1) % island_count] += best_agents
-        populations[i] = populations[i][num_migrants:]
+        best_agents = last_populations[i][:num_migrants]
+        last_populations[(i + 1) % island_count] += best_agents
+        last_populations[i] = last_populations[i][num_migrants:]
+    
 
     for i in range(migration_frequency, num_generations, migration_frequency):
         with Pool(max_processes) as pool:
             island_results = pool.map(partial_run_evolution, last_populations)
-            populations, _, _, _, _, _ = zip(*island_results)
+            populations, _, _, _, _ = zip(*island_results)
             populations = list(populations)
-            last_populations = [pop[-1] for pop in populations]
+            last_populations = [pop[-1][:] for pop in populations]
             for j in range(island_count):
-                global_population_list[j].append(populations[j])
+                global_population_list[j] += populations[j]
         
         if verbose:
             migration_number = i // migration_frequency + 1
@@ -422,5 +369,6 @@ def run_island_model(population_size, num_generations, num_opponents_to_play,
             best_agents = last_populations[j][:num_migrants]
             last_populations[(j + 1) % island_count] += best_agents
             last_populations[j] = last_populations[j][num_migrants:]
+    
     
     return global_population_list
