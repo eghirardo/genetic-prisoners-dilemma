@@ -17,17 +17,19 @@ PAYOFF_MATRIX = {
     (DEFECT, DEFECT):     (1, 1)   # Both defect (Punishment)
 }
 
-GENOME_LENGTH = 20  # 16 for history states + 4 for initial moves
+GENOME_LENGTH = 19  # 16 for history states + 3 for initial moves
 
 # --- Individual Representation ---
 class Individual:
     def __init__(self, genome=None, id_num=0):
         if genome is None:
-            self.genome = np.random.rand(GENOME_LENGTH)
+            self.genome = np.random.rand(GENOME_LENGTH) # initialize with random genome if not provided
         else:
             self.genome = np.array(genome)
         self.fitness = 0.0
-        self.avg_score_per_round = 0.0 # More direct measure from RPD
+        self.avg_score_per_round = 0.0
+        self.total_score = 0.0
+        self.games_played = 0
         self.species_id = None
         self.id = id_num
 
@@ -45,18 +47,9 @@ def get_history_index(my_moves, opp_moves):
     """
     m1, m2 = my_moves[-1], my_moves[-2]
     o1, o2 = opp_moves[-1], opp_moves[-2]
-    # Binary to integer: (m2)(m1)(o2)(o1) - using common RPD notation order for history bits
-    # Let's define an order, e.g., My_t-1, My_t-2, Opp_t-1, Opp_t-2
-    # index = m1 * 8 + m2 * 4 + o1 * 2 + o2 * 1
-    # Or, more standard way: (my_prev1, opp_prev1, my_prev2, opp_prev2) could also be a convention
-    # The paper "Evolving C-Max Strategies" uses (OwnPrev, OppPrev, OwnPrev-1, OppPrev-1)
-    # Let's use: (My_Prev1, My_Prev2, Opp_Prev1, Opp_Prev2)
-    # (0,0,0,0) -> index 0
-    # (1,1,1,1) -> index 15
-    # My_t-1 = my_moves[-1], My_t-2 = my_moves[-2]
-    # Opp_t-1 = opp_moves[-1], Opp_t-2 = opp_moves[-2]
-    index = (my_moves[-1] << 3) | (my_moves[-2] << 2) | \
-            (opp_moves[-1] << 1) | opp_moves[-2]
+    # Binary to integer: (m2)(m1)(o2)(o1)
+    binary_str = f"{m2}{m1}{o2}{o1}"
+    index = int(binary_str, 2)
     return index
 
 def get_move(individual: Individual, my_moves, opp_moves):
@@ -68,7 +61,6 @@ def get_move(individual: Individual, my_moves, opp_moves):
     [0]: First move (no history)
     [1]: My second move when opponent's first move was COOPERATE
     [2]: My second move when opponent's first move was DEFECT
-    [3]: Reserved for future use (could be used for 3rd move with limited history)
     """
     if len(my_moves) == 0:
         # First move - use gene 0
@@ -83,7 +75,7 @@ def get_move(individual: Individual, my_moves, opp_moves):
     else:
         # Use the strategy genome (offset by 4 for the initial moves)
         history_index = get_history_index(my_moves, opp_moves)
-        prob_cooperate = individual.genome[history_index + 4]  # +4 offset for initial moves
+        prob_cooperate = individual.genome[history_index + 3]  # +3 offset for initial moves
         return COOPERATE if random.random() < prob_cooperate else DEFECT
 
 def play_game(ind1: Individual, ind2: Individual, num_rounds: int):
@@ -119,29 +111,20 @@ def calculate_fitnesses(population, num_opponents_to_play: int, num_rounds_per_g
     Fitness is the average score per round achieved by the individual.
     """
     pop_size = len(population)
-    if pop_size <= 1:
-        for ind in population:
-            ind.fitness = 0
-            ind.avg_score_per_round = 0
-        return
 
     for i, ind in enumerate(population):
         ind.fitness = 0  # Reset fitness (will be adjusted by speciation later)
         ind.avg_score_per_round = 0
-        total_score_for_ind = 0
-        games_played = 0
+        ind.total_score = 0
+        ind.games_played = 0
 
         if pop_size <= num_opponents_to_play: # Play against all others if pool is small
             opponent_indices = [j for j in range(pop_size) if j != i]
         else:
             opponent_indices = random.sample([j for j in range(pop_size) if j != i], num_opponents_to_play)
         
-        if not opponent_indices and pop_size > 1: # Should not happen if num_opponents_to_play > 0
-             # This case can occur if num_opponents_to_play is 0 or population is tiny.
-             # Assign a baseline fitness or handle as an error.
-             # For now, if no opponents, fitness remains 0.
-            pass
-        elif not opponent_indices and pop_size == 1:
+
+        if not opponent_indices and pop_size >= 1:
             ind.avg_score_per_round = 0 # No one to play against
             ind.fitness = 0
             continue
@@ -151,21 +134,18 @@ def calculate_fitnesses(population, num_opponents_to_play: int, num_rounds_per_g
             opponent = population[opp_idx]
             
             # ind plays as player 1
-            score_ind, _ = play_game(ind, opponent, num_rounds_per_game)
-            total_score_for_ind += score_ind
-            games_played += 1
-            
-            # ind plays as player 2 (optional, but good for symmetry if strategies are asymmetric)
-            # _, score_ind_as_p2 = play_game(opponent, ind, num_rounds_per_game)
-            # total_score_for_ind += score_ind_as_p2
-            # games_played += 1
-
-
-        if games_played > 0:
-            ind.avg_score_per_round = total_score_for_ind / (games_played * num_rounds_per_game)
+            score_ind, score_opp = play_game(ind, opponent, num_rounds_per_game)
+            ind.total_score += score_ind
+            opponent.total_score += score_opp
+            ind.games_played += 1
+            opponent.games_played += 1
+    
+    for i, ind in enumerate(population):
+        if ind.games_played > 0:
+            ind.avg_score_per_round = ind.total_score / (ind.games_played * num_rounds_per_game)
         else: # Only one individual in population or no opponents selected
-            ind.avg_score_per_round = 0.0 
-        
+            ind.avg_score_per_round = 0.0
+            
         ind.fitness = ind.avg_score_per_round # Raw fitness before speciation adjustment
 
 
@@ -176,44 +156,19 @@ def tournament_selection(population, k=3):
     tournament = random.sample(population, k)
     return max(tournament, key=lambda ind: ind.fitness) # Fitness used here is adjusted fitness
 
-def uniform_crossover(parent1: Individual, parent2: Individual, crossover_rate: float):
-    """Performs uniform crossover."""
-    if random.random() > crossover_rate:
-        return deepcopy(parent1.genome), deepcopy(parent2.genome) # No crossover
 
-    child1_genome = np.copy(parent1.genome)
-    child2_genome = np.copy(parent2.genome)
+def blend_crossover(parent1: Individual, parent2: Individual, alpha: float):
+    """Perform blend crossover"""
+    child_genome = np.zeros(GENOME_LENGTH)
+
+    u = random.uniform(0, 1)
+    gamma = (1- 2*alpha) * u - alpha
+
     for i in range(GENOME_LENGTH):
-        if random.random() < 0.5:
-            child1_genome[i] = parent2.genome[i]
-            child2_genome[i] = parent1.genome[i]
-    return child1_genome, child2_genome
-
-def blx_alpha_crossover(parent1: Individual, parent2: Individual, crossover_rate: float, alpha=0.5):
-    """Performs BLX-alpha crossover."""
-    if random.random() > crossover_rate:
-        return deepcopy(parent1.genome), deepcopy(parent2.genome)
-
-    child1_genome = np.zeros(GENOME_LENGTH)
-    child2_genome = np.zeros(GENOME_LENGTH) # Not always generated by BLX-alpha, but we can make two
+        new_val = parent1.genome[i] * (1 - gamma) + parent2.genome[i] * gamma
+        child_genome[i] = np.clip(new_val, 0.0, 1.0)
     
-    for i in range(GENOME_LENGTH):
-        p1_gene = parent1.genome[i]
-        p2_gene = parent2.genome[i]
-        
-        d = abs(p1_gene - p2_gene)
-        min_val = min(p1_gene, p2_gene) - alpha * d
-        max_val = max(p1_gene, p2_gene) + alpha * d
-        
-        # Child 1
-        rand_val1 = random.uniform(min_val, max_val)
-        child1_genome[i] = np.clip(rand_val1, 0.0, 1.0) # Probabilities must be [0,1]
-        
-        # Child 2 (optional, can be different random value in range)
-        rand_val2 = random.uniform(min_val, max_val)
-        child2_genome[i] = np.clip(rand_val2, 0.0, 1.0)
-        
-    return child1_genome, child2_genome
+    return child_genome
 
 
 def gaussian_mutation(genome, mutation_rate: float, mutation_strength=0.1):
@@ -229,10 +184,8 @@ def gaussian_mutation(genome, mutation_rate: float, mutation_strength=0.1):
 # --- Speciation ---
 def genomic_distance(ind1: Individual, ind2: Individual, c1=1.0, c2=1.0, c3=0.4):
     """
-    Calculates genomic distance based on NEAT's formula (simplified for continuous genomes).
-    Here, we'll use Euclidean distance for simplicity as genes are homologous.
-    The NEAT coefficients (c1, c2, c3 for excess, disjoint, avg weight diffs) are
-    less directly applicable. We can just use Euclidean distance or weighted Euclidean.
+    Calculates the genomic distance between two individuals.
+    This is a simple Euclidean distance metric.
     """
     # Simple Euclidean distance
     return np.linalg.norm(ind1.genome - ind2.genome)
@@ -289,9 +242,8 @@ def speciate_population(population, compatibility_threshold: float):
 
 # --- Population Management ---
 def create_next_generation(population, elite_size: int, tournament_k: int,
-                           crossover_fn, crossover_rate: float,
-                           mutation_fn, mutation_rate: float, mutation_strength: float,
-                           next_ind_id_start: int, crossover_alpha=None): # crossover_alpha for BLX
+                           mutation_rate: float, mutation_strength: float,
+                           next_ind_id_start: int, crossover_alpha=None):
     """
     Creates the next generation of individuals.
     Assumes population individuals have their (potentially shared) fitness calculated.
@@ -315,32 +267,15 @@ def create_next_generation(population, elite_size: int, tournament_k: int,
     while len(new_population) < pop_size:
         parent1 = tournament_selection(population, k=tournament_k)
         parent2 = tournament_selection(population, k=tournament_k)
-        
-        if parent1 is None or parent2 is None: # Population too small or all same fitness
-            # Fallback: if selection fails, just pick random individuals or break
-            if not population: break 
-            parent1 = random.choice(population) if population else None
-            parent2 = random.choice(population) if population else parent1
-            if not parent1: break
 
+        child_genome = blend_crossover(parent1, parent2, crossover_alpha)
 
-        if crossover_alpha is not None: # For BLX-alpha
-             child1_genome, child2_genome = crossover_fn(parent1, parent2, crossover_rate, alpha=crossover_alpha)
-        else: # For uniform crossover
-             child1_genome, child2_genome = crossover_fn(parent1, parent2, crossover_rate)
+        mutated_child_genome = gaussian_mutation(child_genome, mutation_rate, mutation_strength)
 
-        mutated_child1_genome = mutation_fn(child1_genome, mutation_rate, mutation_strength)
-        mutated_child2_genome = mutation_fn(child2_genome, mutation_rate, mutation_strength)
-
-        child1 = Individual(genome=mutated_child1_genome, id_num=current_ind_id)
+        child = Individual(genome=mutated_child_genome, id_num=current_ind_id)
         current_ind_id+=1
         if len(new_population) < pop_size:
-            new_population.append(child1)
-        
-        if len(new_population) < pop_size:
-            child2 = Individual(genome=mutated_child2_genome, id_num=current_ind_id)
-            current_ind_id+=1
-            new_population.append(child2)
+            new_population.append(child)
             
     return new_population[:pop_size], current_ind_id # Ensure correct pop size and return next available ID
 
@@ -352,19 +287,26 @@ def calculate_population_diversity(population):
     distances = []
     for i in range(len(population)):
         for j in range(i + 1, len(population)):
-            dist = rpd.genomic_distance(population[i], population[j])
+            dist = genomic_distance(population[i], population[j])
             distances.append(dist)
     return np.mean(distances) if distances else 0.0
 
 def run_evolution(population_size, num_generations, num_opponents_to_play,
                    num_rounds_per_game, elite_size, tournament_k,
-                   crossover_rate, mutation_rate, mutation_strength,
-                   compatibility_threshold, crossover_fn, mutation_fn,
-                   crossover_alpha=None, population=None, verbose=False):
+                   mutation_rate, mutation_strength,crossover_alpha,
+                   compatibility_threshold,
+                   verbose=False, population=None):
     """
     Main loop for running the evolutionary algorithm.
     """
-    if population == None:
+    population_history = []
+    avg_raw_score_history = []
+    best_raw_score_history = []
+    num_species_history = []
+    population_diversity_history = []
+    avg_fitness_history = []
+
+    if population is None:
         population = initialize_population(population_size)
 
     for generation in range(num_generations):
@@ -378,16 +320,26 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
         # Create next generation
         next_ind_id_start = max(ind.id for ind in population) + 1
         population, next_ind_id_start = create_next_generation(
-            population, elite_size, tournament_k,
-            crossover_fn, crossover_rate,
-            mutation_fn, mutation_rate, mutation_strength,
-            next_ind_id_start, crossover_alpha=crossover_alpha
+            population, elite_size, tournament_k, mutation_rate,
+            mutation_strength, next_ind_id_start, crossover_alpha
         )
 
-        if verbose and generation % verbose ==0:
-            print(f"Generation {generation + 1}/{num_generations}")
-        # Optional: Print diversity of the population
+        avg_raw_score = np.mean([ind.avg_score_per_round for ind in population])
+        best_raw_score = max(ind.avg_score_per_round for ind in population)
+        num_species = len(species_representatives)
         diversity = calculate_population_diversity(population)
-        print(f"Population Diversity: {diversity:.4f}")
+        avg_fitness = np.mean([ind.fitness for ind in population])
 
-    return population
+        population_history.append(population)
+        avg_raw_score_history.append(avg_raw_score)
+        best_raw_score_history.append(best_raw_score)
+        num_species_history.append(num_species)
+        population_diversity_history.append(diversity)
+        avg_fitness_history.append(avg_fitness)
+
+        if verbose and (generation % verbose == 0 or generation == num_generations - 1):
+            print(f"Generation {generation + 1}/{num_generations}")
+            print(f"Avg Raw Score: {avg_raw_score:.2f}, Best Raw Score: {best_raw_score:.2f}")
+            print(f"Avg Fitness: {avg_fitness:.2f}, Num Species: {num_species}")
+            print(f"Population Diversity: {diversity:.2f}")
+    return population, avg_raw_score_history, best_raw_score_history, avg_fitness_history, num_species_history, population_diversity_history
