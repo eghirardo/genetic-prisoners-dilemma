@@ -157,7 +157,7 @@ def rank_selection(population):
     """Selects an individual using rank selection."""
     sorted_population = sorted(population, key=lambda ind: ind.fitness, reverse=True)
     population_size = len(sorted_population)
-    s = 2
+    s = 1.5
     weights = [(2-s) / population_size + (2*rank*s-1) / (population_size*(population_size-1)) for rank in range(population_size, 0, -1)]
     weights = np.array(weights)
     weights /= np.sum(weights)  # Normalize weights to sum to 1
@@ -286,7 +286,6 @@ def run_evolution(population_size, num_generations, num_opponents_to_play,
         if verbose and (generation % verbose == 0 or generation == num_generations - 1):
             print(f"Generation {generation + 1}/{num_generations}")
             print(f"Avg Raw Score: {avg_raw_score:.2f}, Best Raw Score: {best_raw_score:.2f}")
-            print(f"Avg Fitness: {avg_fitness:.2f}")
             print(f"Population Diversity: {diversity:.2f}")
         
         # Create next generation
