@@ -314,6 +314,9 @@ def run_island_model(population_size, num_generations, num_opponents_to_play,
                    mutation_rate, mutation_strength,crossover_alpha,
                    migration_frequency, island_count, num_migrants,
                    verbose=False, processes=-1):
+    """
+    Runs the island model for the evolutionary algorithm.
+    """
     
     partial_run_evolution = partial(_run_evolution_island, population_size=population_size,
                                     num_generations=migration_frequency,
